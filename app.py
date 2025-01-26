@@ -4,77 +4,16 @@ from flask_cors import CORS
 import pandas as pd
 from sqlalchemy import text
 from datetime import datetime
-from werkzeug.security import generate_password_hash, check_password_hash
  
-# Configuration
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "Test_12345678",
-    "database": "TestResultsDB",
-}
- 
-class Config:
-    SECRET_KEY = "your_secret_key"
-    SQLALCHEMY_DATABASE_URI = (
-        f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
-        f"{DB_CONFIG['host']}/{DB_CONFIG['database']}"
-    )
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
- 
-# Initialize Flask app and extensions
 app = Flask(__name__)
-app.config.from_object(Config)
-CORS(app)
+CORS(app)  # Enable CORS
+ 
+# Configure the SQLAlchemy part of the app instance
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:Test_12345678@localhost/TestResultsDB'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+ 
+# Create the SQLAlchemy db instance
 db = SQLAlchemy(app)
- 
-# Models
-class Participant(db.Model):
-    __tablename__ = 'Participants'
-    ParticipantID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    Name = db.Column(db.String(255))
-    Email = db.Column(db.String(255))
- 
-class Batch(db.Model):
-    __tablename__ = 'Batches'
-    BatchID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    BatchNo = db.Column(db.String(255))
- 
-class Subject(db.Model):
-    __tablename__ = 'Subjects'
-    SubjectID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    SubjectName = db.Column(db.String(255))
- 
-class Level(db.Model):
-    __tablename__ = 'Levels'
-    LevelID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    LevelNo = db.Column(db.String(255))
- 
-class Attempt(db.Model):
-    __tablename__ = 'Attempts'
-    AttemptID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    AttemptNo = db.Column(db.String(255))
- 
-class TestResult(db.Model):
-    __tablename__ = 'TestResults'
-    TestResultID = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    ParticipantID = db.Column(db.Integer, db.ForeignKey('Participants.ParticipantID'))
-    BatchID = db.Column(db.Integer, db.ForeignKey('Batches.BatchID'))
-    SubjectID = db.Column(db.Integer, db.ForeignKey('Subjects.SubjectID'))
-    LevelID = db.Column(db.Integer, db.ForeignKey('Levels.LevelID'))
-    AttemptID = db.Column(db.Integer, db.ForeignKey('Attempts.AttemptID'))
-    InviteTime = db.Column(db.DateTime)
-    TestStatus = db.Column(db.String(255))
-    SubmittedDate = db.Column(db.DateTime)
-    LowestScore = db.Column(db.Float)
-    HighestScore = db.Column(db.Float)
- 
-class User(db.Model):
-    __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    name = db.Column(db.String(100))
-    email = db.Column(db.String(100), unique=True)
-    password = db.Column(db.String(255))  # Increase the length to 255
  
 # Function to extract details from the test name
 def extract_details(test_name):
@@ -85,7 +24,10 @@ def extract_details(test_name):
         "Prompt Engineering",
         "Core Software Engineering Coding Skills",
         "Core Software Engineering",
-        "NodeJS  for SE/SSE"
+        "NodeJS for SE/SSE",
+        "ReactJS for SE/SSE",
+        "Angular For SE/SSE",
+        "ReactJS-Leads"
     ]
  
     # Extract batch
@@ -106,23 +48,34 @@ def extract_details(test_name):
 def convert_to_datetime(date_str):
     return datetime.strptime(date_str, '%A, %b %d %Y at %I:%M %p').strftime('%Y-%m-%d %H:%M:%S')
  
-
+# Route to serve the HTML form
+@app.route('/')
+def index():
+    return render_template('upload.html')
+ 
 # Route to upload and save data
-@app.route('/admin/upload', methods=['POST'])
+@app.route('/upload', methods=['POST'])
+ 
 def upload_data():
-    print("Received request to /upload")
     file = request.files['file']
     df = pd.read_excel(file, sheet_name=1)  # Read the second sheet
- 
+   
     # Print column names to verify they are correct
-    print(df.columns)
- 
+    print(f"Columns in the uploaded file: {df.columns}")
+   
     for index, row in df.iterrows():
+        print(f"Processing row: {row['Name']}, {row['Email']}, {row['Test name']}, {row['Invites Time']}, {row['Test Status']}, {row['Submitted Date']}, {row['CN rating']}")
+ 
         name = row['Name']
         email = row['Email']
         test_name = row['Test name']
         invite_time = convert_to_datetime(row['Invites Time'])
-        test_status = row['Test Status']
+ 
+        # Check if 'Test Status' exists in the DataFrame columns
+        if 'Test Status' in df.columns and pd.notna(row['Test Status']):
+            test_status = row['Test Status']
+        else:
+            test_status = 'NULL'  # or set to a default value like ''
        
         # Check if 'Submitted Date' exists and is not NaT
         if pd.notna(row['Submitted Date']):
@@ -131,13 +84,23 @@ def upload_data():
             else:
                 submitted_date = row['Submitted Date'].strftime('%Y-%m-%d %H:%M:%S')
         else:
-            submitted_date = None  # or set to a default value like '0000-00-00 00:00:00'
+            submitted_date = 'NULL'  # or set to a default value like '0000-00-00 00:00:00'
        
-        lowest_score = row['Lowest Score']
-        highest_score = row['Highest Score']
+        # Check if 'CN rating' exists and is not NaN
+        if pd.notna(row['CN rating']):
+            cn_rating = row['CN rating']
+        else:
+            cn_rating = 'NULL'
+ 
+        # Check if 'Appeared in test' exists and is not NaN
+        if 'Appeared in test' in df.columns and pd.notna(row['Appeared in test']):
+            appeared_in_test = row['Appeared in test']
+            appeared_in_test_value = True if appeared_in_test == 'Yes' else False
+        else:
+            appeared_in_test_value = False
  
         batch_no, subject, level_no, attempt_no = extract_details(test_name)
- 
+       
         # Insert participant if not exists
         participant_query = text(f"SELECT ParticipantID FROM Participants WHERE Email = '{email}'")
         participant_result = db.session.execute(participant_query).fetchone()
@@ -146,7 +109,7 @@ def upload_data():
         else:
             insert_participant = text(f"INSERT INTO Participants (Name, Email) VALUES ('{name}', '{email}')")
             db.session.execute(insert_participant)
-            db.session.commit()
+            db.session.commit()  # Ensure commit
             participant_id = db.session.execute(participant_query).fetchone()[0]
  
         # Insert batch if not exists
@@ -157,7 +120,7 @@ def upload_data():
         else:
             insert_batch = text(f"INSERT INTO Batches (BatchNo) VALUES ('{batch_no}')")
             db.session.execute(insert_batch)
-            db.session.commit()
+            db.session.commit()  # Ensure commit
             batch_id = db.session.execute(batch_query).fetchone()[0]
  
         # Insert subject if not exists
@@ -168,7 +131,7 @@ def upload_data():
         else:
             insert_subject = text(f"INSERT INTO Subjects (SubjectName) VALUES ('{subject}')")
             db.session.execute(insert_subject)
-            db.session.commit()
+            db.session.commit()  # Ensure commit
             subject_id = db.session.execute(subject_query).fetchone()[0]
  
         # Insert level if not exists
@@ -179,7 +142,7 @@ def upload_data():
         else:
             insert_level = text(f"INSERT INTO Levels (LevelNo) VALUES ('{level_no}')")
             db.session.execute(insert_level)
-            db.session.commit()
+            db.session.commit()  # Ensure commit
             level_id = db.session.execute(level_query).fetchone()[0]
  
         # Insert attempt if not exists
@@ -190,154 +153,125 @@ def upload_data():
         else:
             insert_attempt = text(f"INSERT INTO Attempts (AttemptNo) VALUES ('{attempt_no}')")
             db.session.execute(insert_attempt)
-            db.session.commit()
+            db.session.commit()  # Ensure commit
             attempt_id = db.session.execute(attempt_query).fetchone()[0]
  
-        # Insert test result
+        # Insert test result with AppearedInTest column
         insert_test_result = text(f"""
             INSERT INTO TestResults (
-                ParticipantID, BatchID, SubjectID, LevelID, AttemptID, InviteTime, TestStatus, SubmittedDate, LowestScore, HighestScore
+                ParticipantID, BatchID, SubjectID, LevelID, AttemptID, InviteTime, TestStatus, SubmittedDate, CNRating, AppearedInTest
             ) VALUES (
-                {participant_id}, {batch_id}, {subject_id}, {level_id}, {attempt_id}, '{invite_time}', '{test_status}',
-                {'NULL' if submitted_date is None else f"'{submitted_date}'"}, {lowest_score}, {highest_score}
+                {participant_id}, {batch_id}, {subject_id}, {level_id}, {attempt_id}, '{invite_time}', {'NULL' if test_status == 'NULL' else f"'{test_status}'"},
+                {'NULL' if submitted_date == 'NULL' else f"'{submitted_date}'"}, {cn_rating}, {appeared_in_test_value}
             )
         """)
         db.session.execute(insert_test_result)
-        db.session.commit()
+        db.session.commit()  # Ensure commit
  
     return jsonify({'message': 'Data uploaded successfully'}), 200
-
-@app.route('/dashboard', methods=['GET'])
-def dashboard():
-    print("Received request to /dashboard")
-    batch_filter = request.args.get('batch')
-    level_filter = request.args.get('level')
-
-    query = text("""
-    SELECT 
-        b.BatchNo, l.LevelNo,
-        COUNT(CASE WHEN tr.TestStatus = 'Cleared CutOff' THEN 1 END) AS ClearedCutoffCount,
-        COUNT(CASE WHEN tr.TestStatus = 'Failed CutOff' THEN 1 END) AS FailedCutoffCount,
-        COUNT(CASE WHEN tr.TestStatus = 'InProgress' THEN 1 END) AS InProgressCount,
-        COUNT(*) AS InvitedCount
-    FROM 
-        TestResults tr
-    JOIN 
-        Participants p ON tr.ParticipantID = p.ParticipantID
-    JOIN 
-        Batches b ON tr.BatchID = b.BatchID
-    JOIN 
-        Subjects s ON tr.SubjectID = s.SubjectID
-    JOIN 
-        Levels l ON tr.LevelID = l.LevelID
-    JOIN 
-        Attempts a ON tr.AttemptID = a.AttemptID
-    WHERE 
-        (:batch IS NULL OR b.BatchNo = :batch)
-        AND (:level IS NULL OR l.LevelNo = :level)
-    GROUP BY 
-        b.BatchNo, l.LevelNo
-    """)
-    results = db.session.execute(query, {'batch': batch_filter, 'level': level_filter}).fetchall()
-
-    data = []
-    for row in results:
-        data.append({
-            'BatchNo': row.BatchNo,
-            'LevelNo': row.LevelNo,
-            'ClearedCutoffCount': row.ClearedCutoffCount,
-            'FailedCutoffCount': row.FailedCutoffCount,
-            'InProgressCount': row.InProgressCount,
-            'InvitedCount': row.InvitedCount
-        })
-
-    return jsonify(data), 200
-
-@app.route('/user/signup', methods=['POST'])
-def signup():
-    data = request.get_json()
-    name = data.get('name')
-    email = data.get('email')
-    password = data.get('password')
-
-    hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
-
-    new_user = User(name=name, email=email, password=hashed_password)
-    db.session.add(new_user)
-    db.session.commit()
-
-    return jsonify({'message': 'Signup successful!'}), 201
-
-@app.route('/user/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-
-    user = User.query.filter_by(email=email).first()
-
-    if user and check_password_hash(user.password, password):
-        user_details = {
-            'name': user.name,
-            'email': user.email,
-            # Add any other details you want to return
-        }
-        return jsonify({'message': 'Login successful!', 'user': user_details}), 200
-
-    return jsonify({'message': 'Invalid credentials!'}), 401
-
-@app.route('/user/details', methods=['GET'])
-def user_details():
-    email = request.args.get('email')
-    participant = Participant.query.filter_by(Email=email).first()
-
-    if participant:
-        query = text("""
-        SELECT tr.InviteTime, tr.TestStatus, tr.SubmittedDate, tr.LowestScore, tr.HighestScore,
-               b.BatchNo, l.LevelNo, s.SubjectName, a.AttemptNo
-        FROM TestResults tr
-        JOIN Batches b ON tr.BatchID = b.BatchID
-        JOIN Levels l ON tr.LevelID = l.LevelID
-        JOIN Subjects s ON tr.SubjectID = s.SubjectID
-        JOIN Attempts a ON tr.AttemptID = a.AttemptID
-        WHERE tr.ParticipantID = :participant_id
-        """)
-        results = db.session.execute(query, {'participant_id': participant.ParticipantID}).fetchall()
-
-        test_results = []
-        for row in results:
-            test_results.append({
-                'InviteTime': row.InviteTime,
-                'TestStatus': row.TestStatus,
-                'SubmittedDate': row.SubmittedDate,
-                'LowestScore': row.LowestScore,
-                'HighestScore': row.HighestScore,
-                'BatchNo': row.BatchNo,
-                'LevelNo': row.LevelNo,
-                'SubjectName': row.SubjectName,
-                'AttemptNo': row.AttemptNo
-            })
-
-        return jsonify({'participant': participant.Name, 'test_results': test_results}), 200
-
-    return jsonify({'message': 'User not found!'}), 404
-
-@app.route('/level-details', methods=['GET'])
-def details():
-    batch_no = request.args.get('batch')
-    level_no = request.args.get('level')
-    query = text("""
+ 
+ 
+@app.route('/api/dashboard1', methods=['GET'])
+def get_dashboard1_data():
+    # Invite Count Query for Level 1
+    invite_count_query_level1 = text("""
     SELECT
-        COUNT(CASE WHEN tr.TestStatus = 'Cleared Cutoff' THEN 1 END) AS ClearedCutoffCount,
-        COUNT(CASE WHEN tr.TestStatus = 'Failed Cutoff' THEN 1 END) AS FailedCutoffCount,
-        COUNT(CASE WHEN tr.TestStatus = 'InProgress' THEN 1 END) AS InProgressCount,
-        COUNT(*) AS TotalInvites,
-        a.AttemptNo,
-        s.SubjectName
+        b.BatchNo,
+        l.LevelNo,
+        COUNT(DISTINCT tr.ParticipantID) AS InviteCount
     FROM
         TestResults tr
     JOIN
-        Participants p ON tr.ParticipantID = p.ParticipantID
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    WHERE
+        l.LevelNo = 'Level1'
+    GROUP BY
+        b.BatchNo, l.LevelNo
+    ORDER BY
+        b.BatchNo, l.LevelNo;
+    """)
+    invite_count_results_level1 = db.session.execute(invite_count_query_level1).fetchall()
+ 
+    # Invite Count Query for Level 2
+    invite_count_query_level2 = text("""
+    SELECT
+        b.BatchNo,
+        l.LevelNo,
+        COUNT(DISTINCT tr.ParticipantID) AS InviteCount
+    FROM
+        TestResults tr
+    JOIN
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    WHERE
+        l.LevelNo = 'Level2'
+    GROUP BY
+        b.BatchNo, l.LevelNo
+    ORDER BY
+        b.BatchNo, l.LevelNo;
+    """)
+    invite_count_results_level2 = db.session.execute(invite_count_query_level2).fetchall()
+ 
+    # Passed Count Query for Level 1
+    passed_count_query_level1 = text("""
+    SELECT
+        b.BatchNo,
+        COUNT(DISTINCT p.ParticipantID) AS ParticipantCount
+    FROM
+        Participants p
+    JOIN
+        TestResults tr ON p.ParticipantID = tr.ParticipantID
+    JOIN
+        Subjects s ON tr.SubjectID = s.SubjectID
+    JOIN
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Attempts a ON tr.AttemptID = a.AttemptID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    WHERE
+        l.LevelNo = 'Level1'
+        AND tr.CNRating > 4.0
+        AND p.ParticipantID IN (
+            SELECT
+                tr.ParticipantID
+            FROM
+                TestResults tr
+            JOIN
+                Subjects s ON tr.SubjectID = s.SubjectID
+            JOIN
+                Levels l ON tr.LevelID = l.LevelID
+            WHERE
+                l.LevelNo = 'Level1'
+                AND tr.CNRating > 4.0
+            GROUP BY
+                tr.ParticipantID
+            HAVING
+                COUNT(DISTINCT s.SubjectID) = (
+                    SELECT COUNT(DISTINCT SubjectID)
+                    FROM Subjects
+                    WHERE SubjectName IN ('Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills')
+                )
+        )
+    GROUP BY
+        b.BatchNo
+    ORDER BY
+        b.BatchNo;
+    """)
+    passed_count_results_level1 = db.session.execute(passed_count_query_level1).fetchall()
+ 
+    # Passed Count Query for Level 2
+    passed_count_query_level2 = text("""
+    SELECT
+        b.BatchNo,
+        COUNT(DISTINCT p.ParticipantID) AS ParticipantCount
+    FROM
+        Participants p
+    JOIN
+        TestResults tr ON p.ParticipantID = tr.ParticipantID
     JOIN
         Batches b ON tr.BatchID = b.BatchID
     JOIN
@@ -347,23 +281,296 @@ def details():
     JOIN
         Attempts a ON tr.AttemptID = a.AttemptID
     WHERE
-        b.BatchNo = :batch_no AND l.LevelNo = :level_no
+        l.LevelNo = 'Level2'
+        AND tr.CNRating >= 4
     GROUP BY
-        a.AttemptNo, s.SubjectName
+        b.BatchNo
+    ORDER BY
+        b.BatchNo;
     """)
-    
-    results = db.session.execute(query, {'batch_no': batch_no, 'level_no': level_no}).fetchall()
+    passed_count_results_level2 = db.session.execute(passed_count_query_level2).fetchall()
+ 
+    # Failed Count Query for Level 1
+    failed_count_query_level1 = text("""
+    SELECT
+        b.BatchNo,
+        COUNT(DISTINCT p.ParticipantID) AS ParticipantCount
+    FROM
+        Participants p
+    JOIN
+        TestResults tr ON p.ParticipantID = tr.ParticipantID
+    JOIN
+        Subjects s ON tr.SubjectID = s.SubjectID
+    JOIN
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Attempts a ON tr.AttemptID = a.AttemptID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    WHERE
+        l.LevelNo = 'Level1'
+        AND tr.CNRating < 4.0
+        AND a.AttemptNo = 'Attempt3'
+    GROUP BY
+        b.BatchNo
+    ORDER BY
+        b.BatchNo;
+    """)
+    failed_count_results_level1 = db.session.execute(failed_count_query_level1).fetchall()
+ 
+    # Failed Count Query for Level 2
+    failed_count_query_level2 = text("""
+    SELECT
+        b.BatchNo,
+        COUNT(DISTINCT p.ParticipantID) AS ParticipantCount
+    FROM
+        Participants p
+    JOIN
+        TestResults tr ON p.ParticipantID = tr.ParticipantID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    JOIN
+        Subjects s ON tr.SubjectID = s.SubjectID
+    JOIN
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Attempts a ON tr.AttemptID = a.AttemptID
+    WHERE
+        l.LevelNo = 'Level2'
+        AND a.AttemptNo = 'Attempt3'
+        AND tr.CNRating < 4
+    GROUP BY
+        b.BatchNo
+    ORDER BY
+        b.BatchNo;
+    """)
+    failed_count_results_level2 = db.session.execute(failed_count_query_level2).fetchall()
+ 
+    # In-Progress Count Query for Level 1
+   
+    in_progress_count_query_level1 = text("""
+    SELECT
+        b.BatchNo,
+        l.LevelNo,
+        COUNT(DISTINCT p.ParticipantID) AS InProgressCount
+    FROM
+        testresultsdb.testresults tr
+    JOIN
+        testresultsdb.participants p ON tr.ParticipantID = p.ParticipantID
+    JOIN
+        testresultsdb.subjects s ON tr.SubjectID = s.SubjectID
+    JOIN
+        testresultsdb.levels l ON tr.LevelID = l.LevelID
+    JOIN
+        testresultsdb.attempts a ON tr.AttemptID = a.AttemptID
+    JOIN
+        testresultsdb.batches b ON tr.BatchID = b.BatchID
+    WHERE
+        l.LevelNo = 'Level1'
+        AND s.SubjectName IN ('Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills')
+        AND tr.AppearedInTest = 1
+        AND p.Email NOT IN (
+            -- Exclude Passed candidates
+            SELECT
+                p.Email
+            FROM
+                testresultsdb.testresults tr
+            JOIN
+                testresultsdb.participants p ON tr.ParticipantID = p.ParticipantID
+            JOIN
+                testresultsdb.subjects s ON tr.SubjectID = s.SubjectID
+            JOIN
+                testresultsdb.levels l ON tr.LevelID = l.LevelID
+            JOIN
+                testresultsdb.attempts a ON tr.AttemptID = a.AttemptID
+            WHERE
+                l.LevelNo = 'Level1'
+                AND s.SubjectName IN ('Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills')
+                AND tr.CNRating >= 4
+                AND tr.AppearedInTest = 1
+            GROUP BY
+                p.Email
+            HAVING
+                COUNT(DISTINCT s.SubjectName) = 3
+        )
+        AND p.Email NOT IN (
+            -- Exclude Failed candidates
+            SELECT
+                p.Email
+            FROM
+                testresultsdb.testresults tr
+            JOIN
+                testresultsdb.participants p ON tr.ParticipantID = p.ParticipantID
+            JOIN
+                testresultsdb.subjects s ON tr.SubjectID = s.SubjectID
+            JOIN
+                testresultsdb.levels l ON tr.LevelID = l.LevelID
+            JOIN
+                testresultsdb.attempts a ON tr.AttemptID = a.AttemptID
+            WHERE
+                l.LevelNo = 'Level1'
+                AND s.SubjectName IN ('Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills')
+                AND a.AttemptNo = 'Attempt3'
+                AND tr.CNRating < 4
+                AND tr.AppearedInTest = 1
+        )
+    GROUP BY
+        b.BatchNo, l.LevelNo
+    ORDER BY
+        b.BatchNo, l.LevelNo;
+""")
+    in_progress_count_results_level1 = db.session.execute(in_progress_count_query_level1).fetchall()
+ 
+    # In-Progress Count Query for Level 2
+    in_progress_count_query_level2 = text("""
+    SELECT
+        b.BatchNo,
+        COUNT(DISTINCT p.ParticipantID) AS ParticipantCount
+    FROM
+        Participants p
+    JOIN
+        TestResults tr ON p.ParticipantID = tr.ParticipantID
+    JOIN
+        Batches b ON tr.BatchID = b.BatchID
+    JOIN
+        Subjects s ON tr.SubjectID = s.SubjectID
+    JOIN
+        Levels l ON tr.LevelID = l.LevelID
+    JOIN
+        Attempts a ON tr.AttemptID = a.AttemptID
+    WHERE
+        l.LevelNo = 'Level2'
+        AND p.ParticipantID NOT IN (
+            SELECT ParticipantID
+            FROM TestResults tr2
+            JOIN Levels l2 ON tr2.LevelID = l2.LevelID
+            JOIN Attempts a2 ON tr2.AttemptID = a2.AttemptID
+            WHERE l2.LevelNo = 'Level2'
+            AND (tr2.CNRating >= 4 OR (a2.AttemptNo = 'Attempt3' AND tr2.CNRating < 4))
+        )
+    GROUP BY
+        b.BatchNo
+    ORDER BY
+        b.BatchNo;
+    """)
+    in_progress_count_results_level2 = db.session.execute(in_progress_count_query_level2).fetchall()
+ 
+    # Combine results into a single JSON response
+    response = {
+        "level1": {
+            "invite_count_lvl1": [dict(row._mapping) for row in invite_count_results_level1],
+            "passed_count_lvl1": [dict(row._mapping) for row in passed_count_results_level1],
+            "failed_count_lvl1": [dict(row._mapping) for row in failed_count_results_level1],
+            "in_progress_count_lvl1": [dict(row._mapping) for row in in_progress_count_results_level1]
+        },
+        "level2": {
+            "invite_count_lvl2": [dict(row._mapping) for row in invite_count_results_level2],
+            "passed_count_lvl2": [dict(row._mapping) for row in passed_count_results_level2],
+            "failed_count_lvl2": [dict(row._mapping) for row in failed_count_results_level2],
+            "in_progress_count_lvl2": [dict(row._mapping) for row in in_progress_count_results_level2]
+        }
+    }
+ 
+    return jsonify(response)
+
+
+
+
+ 
+@app.route('/api/dashboard2', methods=['GET'])
+def get_dashboard2_data():
+    batch_id = request.args.get('batch_id')
+    level_id = request.args.get('level_id')
+ 
+    query = text("""
+    SELECT
+        ts.SubjectName,
+        tr.AttemptID,
+        COUNT(DISTINCT tr.ParticipantID) AS TotalInvitations,
+        SUM(CASE WHEN tr.AppearedInTest = 1 THEN 1 ELSE 0 END) AS TotalAppeared,
+        SUM(CASE WHEN tr.CNRating >= 4.0 THEN 1 ELSE 0 END) AS TotalPass,
+        SUM(CASE WHEN tr.CNRating < 4.0 AND tr.AppearedInTest = 1 THEN 1 ELSE 0 END) AS TotalFail,
+        SUM(CASE WHEN tr.AppearedInTest = 1 AND tr.CNRating IS NULL THEN 1 ELSE 0 END) AS TotalInProgress
+    FROM
+        TestResults tr
+    JOIN
+        Subjects ts ON tr.SubjectID = ts.SubjectID
+    WHERE
+        tr.BatchID = :batch_id
+        AND tr.LevelID = :level_id
+    GROUP BY
+        ts.SubjectName, tr.AttemptID
+    ORDER BY
+        ts.SubjectName, tr.AttemptID;
+    """)
+ 
+    results = db.session.execute(query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+ 
     data = []
     for row in results:
         data.append({
-            'ClearedCutoffCount': row.ClearedCutoffCount,
-            'FailedCutoffCount': row.FailedCutoffCount,
-            'InProgressCount': row.InProgressCount,
-            'TotalInvites': row.TotalInvites,
-            'AttemptNo': row.AttemptNo,
-            'SubjectName': row.SubjectName
+            'SubjectName': row.SubjectName,
+            'AttemptID': row.AttemptID,
+            'TotalInvitations': row.TotalInvitations,
+            'TotalAppeared': row.TotalAppeared,
+            'TotalPass': row.TotalPass,
+            'TotalFail': row.TotalFail,
+            'TotalInProgress': row.TotalInProgress
         })
+ 
     return jsonify(data), 200
+ 
+ 
+@app.route('/api/participant-details', methods=['GET'])
+def get_participant_details():
+    batch_id = request.args.get('batch_id')
+    level_id = request.args.get('level_id')
+    subject_name = request.args.get('subject_name')
+    attempt_id = request.args.get('attempt_id')
+    status = request.args.get('status')
+
+    if not batch_id or not level_id or not subject_name or not attempt_id or not status:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    status_condition = ""
+    if status == 'pass':
+        status_condition = "tr.CNRating >= 4.0"
+    elif status == 'fail':
+        status_condition = "tr.CNRating < 4.0 AND tr.AppearedInTest = 1"
+    elif status == 'invited':
+        status_condition = "1=1"  # All invited participants
+    elif status == 'total_appeared':
+        status_condition = "tr.AppearedInTest = 1"
+
+    query = text(f"""
+    SELECT
+        p.Name,
+        p.Email
+    FROM
+        TestResults tr
+    JOIN
+        Participants p ON tr.ParticipantID = p.ParticipantID
+    JOIN
+        Subjects ts ON tr.SubjectID = ts.SubjectID
+    WHERE
+        tr.BatchID = :batch_id
+        AND tr.LevelID = :level_id
+        AND ts.SubjectName = :subject_name
+        AND tr.AttemptID = :attempt_id
+        AND {status_condition}
+    """)
+
+    results = db.session.execute(query, {
+        'batch_id': batch_id,
+        'level_id': level_id,
+        'subject_name': subject_name,
+        'attempt_id': attempt_id
+    }).fetchall()
+
+    data = [{'Name': row.Name, 'Email': row.Email} for row in results]
+
+    return jsonify(data), 200
+
 
 if __name__ == '__main__':
     with app.app_context():
