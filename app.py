@@ -4,6 +4,8 @@ from flask_cors import CORS
 import pandas as pd
 from sqlalchemy import text
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+ 
  
 app = Flask(__name__)
 CORS(app)  # Enable CORS
@@ -14,6 +16,13 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
  
 # Create the SQLAlchemy db instance
 db = SQLAlchemy(app)
+
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(100))
+    email = db.Column(db.String(100), unique=True)
+    password = db.Column(db.String(255))  # Increase the length to 255
  
 # Function to extract details from the test name
 def extract_details(test_name):
@@ -24,10 +33,11 @@ def extract_details(test_name):
         "Prompt Engineering",
         "Core Software Engineering Coding Skills",
         "Core Software Engineering",
-        "NodeJS for SE/SSE",
-        "ReactJS for SE/SSE",
+        "NodeJS  for SE/SSE",
+        "ReactJS  for SE/SSE",
         "Angular For SE/SSE",
         "ReactJS-Leads"
+ 
     ]
  
     # Extract batch
@@ -55,7 +65,6 @@ def index():
  
 # Route to upload and save data
 @app.route('/upload', methods=['POST'])
- 
 def upload_data():
     file = request.files['file']
     df = pd.read_excel(file, sheet_name=1)  # Read the second sheet
@@ -474,18 +483,24 @@ def get_dashboard1_data():
     return jsonify(response)
 
 
-
-
- 
 @app.route('/api/dashboard2', methods=['GET'])
 def get_dashboard2_data():
-    batch_id = request.args.get('batch_id')
+    batch_number = request.args.get('batch_number')
     level_id = request.args.get('level_id')
- 
+
+    # Query to get the batch ID from the batch number
+    batch_id_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_number")
+    batch_id_result = db.session.execute(batch_id_query, {'batch_number': batch_number}).fetchone()
+
+    if not batch_id_result:
+        return jsonify({'message': 'Batch not found!'}), 404
+
+    batch_id = batch_id_result.BatchID
+
     query = text("""
-    SELECT
+        SELECT
         ts.SubjectName,
-        tr.AttemptID,
+        a.AttemptNo AS AttemptName,
         COUNT(DISTINCT tr.ParticipantID) AS TotalInvitations,
         SUM(CASE WHEN tr.AppearedInTest = 1 THEN 1 ELSE 0 END) AS TotalAppeared,
         SUM(CASE WHEN tr.CNRating >= 4.0 THEN 1 ELSE 0 END) AS TotalPass,
@@ -495,42 +510,57 @@ def get_dashboard2_data():
         TestResults tr
     JOIN
         Subjects ts ON tr.SubjectID = ts.SubjectID
+    JOIN
+        Attempts a ON tr.AttemptID = a.AttemptID
     WHERE
         tr.BatchID = :batch_id
         AND tr.LevelID = :level_id
     GROUP BY
-        ts.SubjectName, tr.AttemptID
+        ts.SubjectName, a.AttemptNo
     ORDER BY
-        ts.SubjectName, tr.AttemptID;
+        ts.SubjectName, a.AttemptNo;
     """)
- 
+
     results = db.session.execute(query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
- 
+
     data = []
     for row in results:
         data.append({
             'SubjectName': row.SubjectName,
-            'AttemptID': row.AttemptID,
+            'AttemptName': row.AttemptName,
             'TotalInvitations': row.TotalInvitations,
             'TotalAppeared': row.TotalAppeared,
             'TotalPass': row.TotalPass,
             'TotalFail': row.TotalFail,
             'TotalInProgress': row.TotalInProgress
         })
- 
+
     return jsonify(data), 200
- 
- 
+
 @app.route('/api/participant-details', methods=['GET'])
 def get_participant_details():
-    batch_id = request.args.get('batch_id')
+    batch_no = request.args.get('batch_id')
     level_id = request.args.get('level_id')
     subject_name = request.args.get('subject_name')
-    attempt_id = request.args.get('attempt_id')
+    attempt_no = request.args.get('attempt_id')
     status = request.args.get('status')
 
-    if not batch_id or not level_id or not subject_name or not attempt_id or not status:
+    if not batch_no or not level_id or not subject_name or not attempt_no or not status:
         return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Fetch BatchID from Batches table
+    batch_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_no")
+    batch_result = db.session.execute(batch_query, {'batch_no': batch_no}).fetchone()
+    if not batch_result:
+        return jsonify({'error': 'Invalid batch_id'}), 400
+    batch_id = batch_result.BatchID
+
+    # Fetch AttemptID from Attempts table
+    attempt_query = text("SELECT AttemptID FROM Attempts WHERE AttemptNo = :attempt_no")
+    attempt_result = db.session.execute(attempt_query, {'attempt_no': attempt_no}).fetchone()
+    if not attempt_result:
+        return jsonify({'error': 'Invalid attempt_id'}), 400
+    attempt_id = attempt_result.AttemptID
 
     status_condition = ""
     if status == 'pass':
@@ -571,6 +601,71 @@ def get_participant_details():
 
     return jsonify(data), 200
 
+
+
+@app.route('/user/signup', methods=['POST'])
+def signup():
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+
+    hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+
+    new_user = User(name=name, email=email, password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify({'message': 'Signup successful!'}), 201
+
+@app.route('/user/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    user = User.query.filter_by(email=email).first()
+
+    if user and check_password_hash(user.password, password):
+        user_details = {
+            'name': user.name,
+            'email': user.email,
+            # Add any other details you want to return
+        }
+        return jsonify({'message': 'Login successful!', 'user': user_details}), 200
+
+    return jsonify({'message': 'Invalid credentials!'}), 401
+
+@app.route('/user/details', methods=['GET'])
+def user_details():
+    email = request.args.get('email')
+    participant = db.session.execute(text("SELECT * FROM Participants WHERE Email = :email"), {'email': email}).fetchone()
+
+    if participant:
+        query = text("""
+        SELECT b.BatchNo, l.LevelNo, s.SubjectName, tr.TestStatus
+        FROM TestResults tr
+        JOIN Batches b ON tr.BatchID = b.BatchID
+        JOIN Levels l ON tr.LevelID = l.LevelID
+        JOIN Subjects s ON tr.SubjectID = s.SubjectID
+        JOIN Attempts a ON tr.AttemptID = a.AttemptID
+        WHERE tr.ParticipantID = :participant_id
+        """)
+        results = db.session.execute(query, {'participant_id': participant.ParticipantID}).fetchall()
+
+        test_results = []
+        for row in results:
+            test_results.append({
+                'BatchNo': row.BatchNo,
+                'LevelNo': row.LevelNo,
+                'SubjectName': row.SubjectName,
+                'TestStatus': row.TestStatus
+            })
+
+        return jsonify({'participant': participant.Name, 'test_results': test_results}), 200
+
+    return jsonify({'message': 'User not found!'}), 404
+    
 
 if __name__ == '__main__':
     with app.app_context():
