@@ -73,15 +73,16 @@ def upload_data():
     print(f"Columns in the uploaded file: {df.columns}")
    
     for index, row in df.iterrows():
-        print(f"Processing row: {row['Name']}, {row['Email']}, {row['Test name']}, {row['Invites Time']}, {row['Test Status']}, {row['Submitted Date']}, {row['CN rating']}")
+        print(f"Processing row: {row['Name']}, {row['Email']}, {row['Test name']}, {row['Invites Time']}, {row['Test Status']}, {row['Submitted Date']}, {row['CN rating']}, {row['Primary Skill']}")
  
         name = row['Name']
         email = row['Email']
+        primary_skill = row['Primary Skill']
         test_name = row['Test name']
         invite_time = convert_to_datetime(row['Invites Time'])
  
         # Check if 'Test Status' exists in the DataFrame columns
-        if 'Test Status' in df.columns and pd.notna(row['Test Status']):
+        if 'Test Status' in df.columns and pd.notna(row['Test Status']): 
             test_status = row['Test Status']
         else:
             test_status = 'NULL'  # or set to a default value like ''
@@ -116,7 +117,7 @@ def upload_data():
         if participant_result:
             participant_id = participant_result[0]
         else:
-            insert_participant = text(f"INSERT INTO Participants (Name, Email) VALUES ('{name}', '{email}')")
+            insert_participant = text(f"INSERT INTO Participants (Name, Email, PrimarySkill) VALUES ('{name}', '{email}', '{primary_skill}')")
             db.session.execute(insert_participant)
             db.session.commit()  # Ensure commit
             participant_id = db.session.execute(participant_query).fetchone()[0]
@@ -537,6 +538,462 @@ def get_dashboard2_data():
 
     return jsonify(data), 200
 
+@app.route('/api/candidates/pass', methods=['GET'])
+def get_candidates_pass():
+    batch_no = request.args.get('batch_no')
+    level_no = request.args.get('level_no')
+    if not batch_no or not level_no:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Fetch BatchID
+    batch_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_no")
+    batch_result = db.session.execute(batch_query, {'batch_no': batch_no}).fetchone()
+    if not batch_result:
+        return jsonify({'error': 'Invalid batch_no'}), 400
+    batch_id = batch_result.BatchID
+
+    # Fetch LevelID
+    level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :level_no")
+    level_result = db.session.execute(level_query, {'level_no': level_no}).fetchone()
+    if not level_result:
+        return jsonify({'error': 'Invalid level_no'}), 400
+    level_id = level_result.LevelID
+
+    # Fetch the next level ID (for Level 1 -> Level 2, Level 2 -> Level 3)
+    next_level_no = ''
+    if level_no == 'Level1':
+        next_level_no = 'Level2'
+    elif level_no == 'Level2':
+        next_level_no = 'Level3'
+    else:
+        return jsonify({'error': 'Invalid level_no'}), 400
+
+    # Fetch the LevelID for the next level
+    next_level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :next_level_no")
+    next_level_result = db.session.execute(next_level_query, {'next_level_no': next_level_no}).fetchone()
+
+    # If next level is not present, set next_level_id to None
+    next_level_id = next_level_result.LevelID if next_level_result else None
+
+    # For Level1, passed candidates must have passed all three subjects.
+    if level_no == 'Level1':
+        query = text("""
+            SELECT DISTINCT p.Name, p.Email, p.PrimarySkill
+            FROM Participants p
+            JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+            JOIN Subjects s ON tr.SubjectID = s.SubjectID
+            WHERE tr.BatchID = :batch_id
+              AND tr.LevelID = :level_id
+              AND tr.CNRating > 4.0
+              AND p.ParticipantID IN (
+                    SELECT tr.ParticipantID
+                    FROM TestResults tr
+                    JOIN Subjects s ON tr.SubjectID = s.SubjectID
+                    WHERE tr.LevelID = :level_id AND tr.CNRating > 4.0
+                    GROUP BY tr.ParticipantID
+                    HAVING COUNT(DISTINCT s.SubjectID) = (
+                        SELECT COUNT(DISTINCT SubjectID)
+                        FROM Subjects
+                        WHERE SubjectName IN ('Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills')
+                    )
+              )
+        """)
+    elif level_no == 'Level2':
+        query = text("""
+            SELECT DISTINCT p.Name, p.Email, p.PrimarySkill
+            FROM Participants p
+            JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+            WHERE tr.BatchID = :batch_id
+              AND tr.LevelID = :level_id
+              AND tr.CNRating >= 4.0
+        """)
+    else:
+        return jsonify({'error': 'Invalid level_no'}), 400
+
+    # Fetch passed candidates
+    results = db.session.execute(query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+
+    # For each passed candidate, check if they've been invited for the next level
+    candidates_data = []
+    for row in results:
+        name = row.Name
+        email = row.Email
+        primary_skill = row.PrimarySkill
+
+        # If there is no next level (next_level_id is None), set 'Not Invited'
+        if next_level_id is None:
+            is_invited = 'Not Invited'
+        else:
+            # Check if the candidate has been invited to the next level
+            invitation_query = text("""
+                SELECT COUNT(*) 
+                FROM TestResults tr
+                WHERE tr.ParticipantID = (
+                    SELECT ParticipantID 
+                    FROM Participants p
+                    WHERE p.Email = :email
+                ) AND tr.BatchID = :batch_id AND tr.LevelID = :next_level_id
+            """)
+            invitation_result = db.session.execute(invitation_query, {'email': email, 'batch_id': batch_id, 'next_level_id': next_level_id}).fetchone()
+
+            # If the count of invitations > 0, the candidate is invited to the next level
+            is_invited = 'Yes' if invitation_result[0] > 0 else 'No'
+
+        candidates_data.append({
+            'Name': name,
+            'Email': email,
+            'PrimarySkill': primary_skill,
+            'InvitedForNextLevel': is_invited
+        })
+
+    return jsonify(candidates_data), 200
+
+
+
+@app.route('/api/candidates/invited', methods=['GET'])
+def get_total_invites():
+    # Get batch_no and level_no from query parameters
+    batch_no = request.args.get('batch_no')
+    level_no = request.args.get('level_no')
+
+    if not batch_no or not level_no:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Fetch BatchID for the given batch_no
+    batch_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_no")
+    batch_result = db.session.execute(batch_query, {'batch_no': batch_no}).fetchone()
+    if not batch_result:
+        return jsonify({'error': 'Invalid batch_no'}), 400
+    batch_id = batch_result.BatchID
+
+    # Fetch LevelID for the given level_no
+    level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :level_no")
+    level_result = db.session.execute(level_query, {'level_no': level_no}).fetchone()
+    if not level_result:
+        return jsonify({'error': 'Invalid level_no'}), 400
+    level_id = level_result.LevelID
+
+    # Query to calculate the total invitations sent for the given batch and level
+    query = text("""
+        SELECT p.Name, p.Email, p.PrimarySkill, COUNT(tr.InviteTime) AS TotalInvites
+        FROM Participants p
+        JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+        WHERE tr.BatchID = :batch_id
+          AND tr.LevelID = :level_id
+        GROUP BY p.ParticipantID
+    """)
+
+    # Fetch the total invitations data
+    results = db.session.execute(query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+
+    # Prepare response data with Name, Email, and Tech Stack (PrimarySkill) and total invites
+    invited_candidates = []
+    for row in results:
+        invited_candidates.append({
+            'Name': row.Name,
+            'Email': row.Email,
+            'TechStack': row.PrimarySkill,
+            'TotalInvites': row.TotalInvites
+        })
+
+    return jsonify(invited_candidates), 200
+
+ 
+@app.route('/api/candidates/fail', methods=['GET'])
+def get_candidates_fail():
+    batch_no = request.args.get('batch_no')
+    level_no = request.args.get('level_no')
+    if not batch_no or not level_no:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Fetch BatchID
+    batch_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_no")
+    batch_result = db.session.execute(batch_query, {'batch_no': batch_no}).fetchone()
+    if not batch_result:
+        return jsonify({'error': 'Invalid batch_no'}), 400
+    batch_id = batch_result.BatchID
+
+    # Fetch LevelID
+    level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :level_no")
+    level_result = db.session.execute(level_query, {'level_no': level_no}).fetchone()
+    if not level_result:
+        return jsonify({'error': 'Invalid level_no'}), 400
+    level_id = level_result.LevelID
+
+    # Fetch the next level ID (for Level 1 -> Level 2, Level 2 -> Level 3)
+    next_level_no = ''
+    if level_no == 'Level1':
+        next_level_no = 'Level2'
+    elif level_no == 'Level2':
+        next_level_no = 'Level3'
+    else:
+        return jsonify({'error': 'Invalid level_no'}), 400
+
+    # Fetch the LevelID for the next level
+    next_level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :next_level_no")
+    next_level_result = db.session.execute(next_level_query, {'next_level_no': next_level_no}).fetchone()
+
+    # If next level is not present, set next_level_id to None
+    next_level_id = next_level_result.LevelID if next_level_result else None
+
+    if level_no == 'Level1':
+        # --- For Level1 failed candidates, include subject-wise status and invitation details ---
+        fail_candidates_query = text("""
+            SELECT DISTINCT p.ParticipantID, p.Name, p.Email, p.PrimarySkill
+            FROM Participants p
+            JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+            JOIN Attempts a ON tr.AttemptID = a.AttemptID
+            WHERE tr.BatchID = :batch_id
+              AND tr.LevelID = :level_id
+              AND tr.CNRating < 4.0
+              AND a.AttemptNo = 'Attempt3'
+        """)
+        candidates_results = db.session.execute(fail_candidates_query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+        
+        # Define the subjects to check (adjust names if necessary)
+        subjects_list = ['Core Software Engineering', 'Prompt Engineering', 'Core Software Engineering Coding Skills']
+        candidates_data = []
+        
+        for candidate in candidates_results:
+            candidate_id = candidate.ParticipantID
+
+            # Retrieve all test results for this candidate for the three subjects
+            test_results_query = text("""
+                SELECT ts.SubjectName, tr.CNRating, a.AttemptNo, tr.InviteTime, tr.AppearedInTest
+                FROM TestResults tr
+                JOIN Subjects ts ON tr.SubjectID = ts.SubjectID
+                JOIN Attempts a ON tr.AttemptID = a.AttemptID
+                WHERE tr.BatchID = :batch_id
+                  AND tr.LevelID = :level_id
+                  AND tr.ParticipantID = :candidate_id
+                  AND ts.SubjectName IN :subjects
+            """)
+            test_results = db.session.execute(
+                test_results_query,
+                {
+                    'batch_id': batch_id,
+                    'level_id': level_id,
+                    'candidate_id': candidate_id,
+                    'subjects': tuple(subjects_list)
+                }
+            ).fetchall()
+
+            # For each subject, mark as "pass" if any attempt shows CNRating >= 4.0; otherwise, "fail"
+            subject_status = {subject: 'fail' for subject in subjects_list}
+            for row in test_results:
+                subj = row.SubjectName
+                if row.CNRating is not None and row.CNRating >= 4.0:
+                    subject_status[subj] = 'pass'
+
+            # Retrieve aggregate invitation details for this candidate at the given batch/level
+            agg_query = text("""
+                SELECT COUNT(*) as total_invitations,
+                       MAX(InviteTime) as last_invited,
+                       SUM(CASE WHEN AppearedInTest = 1 THEN 1 ELSE 0 END) as total_appeared
+                FROM TestResults
+                WHERE BatchID = :batch_id
+                  AND LevelID = :level_id
+                  AND ParticipantID = :candidate_id
+            """)
+            agg_result = db.session.execute(agg_query, {
+                'batch_id': batch_id,
+                'level_id': level_id,
+                'candidate_id': candidate_id
+            }).fetchone()
+
+            # Check if next level exists, and set 'Not Invited' if not
+            if next_level_id is None:
+                is_invited = 'Not Invited'
+            else:
+                # Check if the candidate has been invited to the next level
+                invitation_query = text("""
+                    SELECT COUNT(*) 
+                    FROM TestResults tr
+                    WHERE tr.ParticipantID = :candidate_id
+                      AND tr.BatchID = :batch_id 
+                      AND tr.LevelID = :next_level_id
+                """)
+                invitation_result = db.session.execute(invitation_query, {'candidate_id': candidate_id, 'batch_id': batch_id, 'next_level_id': next_level_id}).fetchone()
+                is_invited = 'Yes' if invitation_result[0] > 0 else 'No'
+
+            candidate_data = {
+                'Name': candidate.Name,
+                'Email': candidate.Email,
+                'PrimarySkill': candidate.PrimarySkill,
+                'TotalInvitations': agg_result.total_invitations,
+                'LastInvited': agg_result.last_invited,
+                'TotalAppeared': agg_result.total_appeared,
+                'Subjects': [
+                    {'SubjectName': subj, 'Status': subject_status[subj]}
+                    for subj in subjects_list
+                ],
+                'InvitedForNextLevel': is_invited
+            }
+            candidates_data.append(candidate_data)
+        
+        return jsonify(candidates_data), 200
+    
+    elif level_no == 'Level2':
+        # For Level 2, show subject-wise failure details
+        fail_candidates_query = text("""
+            SELECT DISTINCT p.ParticipantID, p.Name, p.Email, p.PrimarySkill
+            FROM Participants p
+            JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+            JOIN Attempts a ON tr.AttemptID = a.AttemptID
+            WHERE tr.BatchID = :batch_id
+              AND tr.LevelID = :level_id
+              AND tr.CNRating < 4.0
+              AND a.AttemptNo = 'Attempt3'
+        """)
+        candidates_results = db.session.execute(fail_candidates_query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+
+        # Define subjects to check for Level 2
+        subjects_list = [ 'NodeJS  for SE/SSE','ReactJS  for SE/SSE','Angular For SE/SSE','ReactJS-Leads']
+        candidates_data = []
+
+        for candidate in candidates_results:
+            candidate_id = candidate.ParticipantID
+
+            # Retrieve all test results for this candidate for the subjects
+            test_results_query = text("""
+                SELECT ts.SubjectName, tr.CNRating, a.AttemptNo, tr.InviteTime, tr.AppearedInTest
+                FROM TestResults tr
+                JOIN Subjects ts ON tr.SubjectID = ts.SubjectID
+                JOIN Attempts a ON tr.AttemptID = a.AttemptID
+                WHERE tr.BatchID = :batch_id
+                  AND tr.LevelID = :level_id
+                  AND tr.ParticipantID = :candidate_id
+                  AND ts.SubjectName IN :subjects
+            """)
+            test_results = db.session.execute(
+                test_results_query,
+                {
+                    'batch_id': batch_id,
+                    'level_id': level_id,
+                    'candidate_id': candidate_id,
+                    'subjects': tuple(subjects_list)
+                }
+            ).fetchall()
+
+            # For each subject, mark as "pass" if any attempt shows CNRating >= 4.0; otherwise, "fail"
+            subject_status = {subject: 'fail' for subject in subjects_list}
+            for row in test_results:
+                subj = row.SubjectName
+                if row.CNRating is not None and row.CNRating >= 4.0:
+                    subject_status[subj] = 'pass'
+
+            # Append candidate data for level 2 with subject details
+            candidate_data = {
+                'Name': candidate.Name,
+                'Email': candidate.Email,
+                'PrimarySkill': candidate.PrimarySkill,
+                'Subjects': [
+                    {'SubjectName': subj, 'Status': subject_status[subj]}
+                    for subj in subjects_list
+                ]
+            }
+            candidates_data.append(candidate_data)
+        
+        return jsonify(candidates_data), 200
+
+    else:
+        return jsonify({'error': 'Invalid level_no'}), 400
+
+ 
+@app.route('/api/candidates/in_progress', methods=['GET'])
+def get_candidates_in_progress():
+    batch_no = request.args.get('batch_no')
+    level_no = request.args.get('level_no')
+    
+    if not batch_no or not level_no:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Fetch BatchID
+    batch_query = text("SELECT BatchID FROM Batches WHERE BatchNo = :batch_no")
+    batch_result = db.session.execute(batch_query, {'batch_no': batch_no}).fetchone()
+    if not batch_result:
+        return jsonify({'error': 'Invalid batch_no'}), 400
+    batch_id = batch_result.BatchID
+
+    # Fetch LevelID
+    level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :level_no")
+    level_result = db.session.execute(level_query, {'level_no': level_no}).fetchone()
+    if not level_result:
+        return jsonify({'error': 'Invalid level_no'}), 400
+    level_id = level_result.LevelID
+
+    # Fetch the next level ID (for Level 1 -> Level 2, Level 2 -> Level 3)
+    next_level_no = ''
+    if level_no == 'Level1':
+        next_level_no = 'Level2'
+    elif level_no == 'Level2':
+        next_level_no = 'Level3'
+    else:
+        return jsonify({'error': 'Invalid level_no'}), 400
+
+    # Fetch the LevelID for the next level
+    next_level_query = text("SELECT LevelID FROM Levels WHERE LevelNo = :next_level_no")
+    next_level_result = db.session.execute(next_level_query, {'next_level_no': next_level_no}).fetchone()
+
+    # If next level is not present, set next_level_id to None
+    next_level_id = next_level_result.LevelID if next_level_result else None
+
+    # In-progress candidates: Those who have CNRating between 0 and 4.0 and have not passed the current level
+    in_progress_query = text("""
+        SELECT DISTINCT p.ParticipantID, p.Name, p.Email, p.PrimarySkill
+        FROM Participants p
+        JOIN TestResults tr ON p.ParticipantID = tr.ParticipantID
+        WHERE tr.BatchID = :batch_id
+          AND tr.LevelID = :level_id
+          AND tr.CNRating >= 0
+          AND tr.CNRating < 4.0
+          AND tr.ParticipantID NOT IN (
+              SELECT ParticipantID 
+              FROM TestResults 
+              WHERE BatchID = :batch_id 
+                AND LevelID = :level_id 
+                AND CNRating >= 4.0
+          )
+    """)
+
+    candidates_results = db.session.execute(in_progress_query, {'batch_id': batch_id, 'level_id': level_id}).fetchall()
+    
+    candidates_data = []
+    
+    for candidate in candidates_results:
+        candidate_id = candidate.ParticipantID
+
+        # Check if the candidate has been invited for the next level (if it exists)
+        if next_level_id is None:
+            is_invited = 'Not Invited'
+        else:
+            invitation_query = text("""
+                SELECT COUNT(*) 
+                FROM TestResults tr
+                WHERE tr.ParticipantID = :candidate_id
+                  AND tr.BatchID = :batch_id 
+                  AND tr.LevelID = :next_level_id
+            """)
+            invitation_result = db.session.execute(invitation_query, {'candidate_id': candidate_id, 'batch_id': batch_id, 'next_level_id': next_level_id}).fetchone()
+            is_invited = 'Yes' if invitation_result[0] > 0 else 'No'
+
+        # Append candidate data with in-progress status and invitation details
+        candidate_data = {
+            'Name': candidate.Name,
+            'Email': candidate.Email,
+            'PrimarySkill': candidate.PrimarySkill,
+            'InvitedForNextLevel': is_invited
+        }
+        candidates_data.append(candidate_data)
+
+    # Return the count and the list of in-progress candidates
+    return jsonify({
+        'InProgressCount': len(candidates_data),
+        'InProgressCandidates': candidates_data
+    }), 200
+
+
+
 @app.route('/api/participant-details', methods=['GET'])
 def get_participant_details():
     batch_no = request.args.get('batch_id')
@@ -639,33 +1096,135 @@ def login():
 @app.route('/user/details', methods=['GET'])
 def user_details():
     email = request.args.get('email')
+    if not email:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
     participant = db.session.execute(text("SELECT * FROM Participants WHERE Email = :email"), {'email': email}).fetchone()
 
-    if participant:
+    if not participant:
+        return jsonify({'message': 'User not found!'}), 404
+
+    # Initialize a dictionary to store the test details by levels
+    level_details = {}
+
+    # Function to process data for each level
+    def get_level_details(level):
         query = text("""
-        SELECT b.BatchNo, l.LevelNo, s.SubjectName, tr.TestStatus
-        FROM TestResults tr
-        JOIN Batches b ON tr.BatchID = b.BatchID
-        JOIN Levels l ON tr.LevelID = l.LevelID
-        JOIN Subjects s ON tr.SubjectID = s.SubjectID
-        JOIN Attempts a ON tr.AttemptID = a.AttemptID
-        WHERE tr.ParticipantID = :participant_id
+        SELECT 
+            p.Name AS ParticipantName,
+            p.Email,
+            s.SubjectName,
+            b.BatchNo,
+            COUNT(tr.TestResultID) AS TotalInvites,
+            MAX(tr.InviteTime) AS LastInviteDate,
+            MIN(tr.InviteTime) AS FirstInviteDate
+        FROM 
+            Participants p
+        JOIN 
+            TestResults tr ON p.ParticipantID = tr.ParticipantID
+        JOIN 
+            Subjects s ON tr.SubjectID = s.SubjectID
+        JOIN 
+            Levels l ON tr.LevelID = l.LevelID
+        JOIN 
+            Batches b ON tr.BatchID = b.BatchID
+        WHERE 
+            p.Email = :email AND l.LevelNo = :level
+        GROUP BY 
+            p.Name, p.Email, s.SubjectName, b.BatchNo
+        ORDER BY 
+            LastInviteDate DESC
         """)
-        results = db.session.execute(query, {'participant_id': participant.ParticipantID}).fetchall()
 
-        test_results = []
-        for row in results:
-            test_results.append({
-                'BatchNo': row.BatchNo,
-                'LevelNo': row.LevelNo,
+        level_results = db.session.execute(query, {'email': email, 'level': level}).fetchall()
+
+        level_test_details = []
+
+        for row in level_results:
+            detail = {
+                'ParticipantName': row.ParticipantName,
+                'Email': row.Email,
                 'SubjectName': row.SubjectName,
-                'TestStatus': row.TestStatus
-            })
+                'BatchNo': row.BatchNo,
+                'TotalInvites': row.TotalInvites,
+                'LastInvited': row.LastInviteDate,
+                'StartDate': row.FirstInviteDate,
+            }
 
-        return jsonify({'participant': participant.Name, 'test_results': test_results}), 200
+            # Check pass/fail conditions for the current level
+            passed_query = text("""
+            SELECT COUNT(*) 
+            FROM TestResults tr 
+            WHERE tr.ParticipantID = :participant_id AND tr.LevelID = (SELECT LevelID FROM Levels WHERE LevelNo = :level) AND tr.CNRating >= 4
+            """)
 
-    return jsonify({'message': 'User not found!'}), 404
+            passed = db.session.execute(passed_query, {'participant_id': participant.ParticipantID, 'level': level}).scalar()
+
+            if passed:
+                detail['TestStatus'] = 'Passed'
+                detail['InviteForNextLevel'] = 'No'
+                detail['InviteDate'] = None
+            else:
+                detail['TestStatus'] = 'Failed'
+
+                # Check if the participant is invited for the next level
+                next_level_query = text("""
+                SELECT 
+                    MIN(tr2.InviteTime) AS NextLevelInviteDate
+                FROM 
+                    TestResults tr2 
+                JOIN 
+                    Levels l ON tr2.LevelID = l.LevelID
+                WHERE 
+                    tr2.ParticipantID = :participant_id AND l.LevelNo = :next_level
+                """)
+
+                next_level = {
+                    'Level1': 'Level2',
+                    'Level2': 'Level3',
+                    'Level3': 'Level4',
+                    'Level4': 'Level5'
+                }
+
+                next_level_results = db.session.execute(next_level_query, {'participant_id': participant.ParticipantID, 'next_level': next_level.get(level)}).fetchone()
+
+                if next_level_results and next_level_results.NextLevelInviteDate:
+                    detail['InviteForNextLevel'] = 'Yes'
+                    detail['InviteDate'] = next_level_results.NextLevelInviteDate
+                else:
+                    detail['InviteForNextLevel'] = 'No'
+                    detail['InviteDate'] = None
+
+            level_test_details.append(detail)
+        return level_test_details
+
+    # Get the details for each level from Level 1 to Level 5
+    level_details['Level1'] = get_level_details('Level1')
+    level_details['Level2'] = get_level_details('Level2')
     
+    # You can add more levels here in a similar way
+
+    # Determine overall test status (Passed only if any subject passed)
+    overall_status = 'Failed'
+
+    # Iterate over levels and check if the status is passed for any subject
+    for level in level_details.values():
+        for detail in level:
+            if detail['TestStatus'] == 'Passed':
+                overall_status = 'Passed'
+                break  # No need to check further if we found a "Passed" status
+
+    # Check if Level 2 data is present to set InviteForNextLevel to "Yes"
+    if 'Level2' in level_details and level_details['Level2']:
+        for detail in level_details['Level1']:
+            detail['InviteForNextLevel'] = 'Yes'
+
+    return jsonify({
+        'participant': participant.Name,
+        'test_status': overall_status,
+        'details': level_details
+    }), 200
+
 
 if __name__ == '__main__':
     with app.app_context():
