@@ -1,32 +1,138 @@
-CREATE DATABASE IF NOT EXISTS excel_data;
+CREATE DATABASE TestResultsDB;
 
-USE excel_data;
+USE TestResultsDB;
+ 
+CREATE TABLE Participants (
 
-DROP TABLE IF EXISTS test_data;
+    ParticipantID INT PRIMARY KEY AUTO_INCREMENT,
 
-CREATE TABLE test_data (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100),
-    email VARCHAR(100),
-    mobile VARCHAR(15),
-    level VARCHAR(50),
-    testname VARCHAR(100),
-    attempt INT,
-    batch VARCHAR(50),
-    invites_time VARCHAR(50),
-    invited INT,
-    not_appeared INT,
-    appeared INT,
-    lowest_score FLOAT,
-    highest_score FLOAT,
-    test_status VARCHAR(50),
-    submitted_date VARCHAR(50)
+    Name VARCHAR(255),
+
+    Email VARCHAR(255)
+
 );
+ 
+CREATE TABLE Batches (
+
+    BatchID INT PRIMARY KEY AUTO_INCREMENT,
+
+    BatchNo VARCHAR(255)
+
+);
+ 
+CREATE TABLE Subjects (
+
+    SubjectID INT PRIMARY KEY AUTO_INCREMENT,
+
+    SubjectName VARCHAR(255)
+
+);
+ 
+CREATE TABLE Levels (
+
+    LevelID INT PRIMARY KEY AUTO_INCREMENT,
+
+    LevelNo VARCHAR(255)
+
+);
+ 
+CREATE TABLE Attempts (
+
+    AttemptID INT PRIMARY KEY AUTO_INCREMENT,
+
+    AttemptNo VARCHAR(255)
+
+);
+ 
+CREATE TABLE TestResults (
+
+    TestResultID INT PRIMARY KEY AUTO_INCREMENT,
+
+    ParticipantID INT,
+
+    BatchID INT,
+
+    SubjectID INT,
+
+    LevelID INT,
+
+    AttemptID INT,
+
+    InviteTime DATETIME,
+
+    TestStatus VARCHAR(255),
+
+    SubmittedDate DATETIME,
+
+    LowestScore float,
+
+    HighestScore float,
+
+    FOREIGN KEY (ParticipantID) REFERENCES Participants(ParticipantID),
+
+    FOREIGN KEY (BatchID) REFERENCES Batches(BatchID),
+
+    FOREIGN KEY (SubjectID) REFERENCES Subjects(SubjectID),
+
+    FOREIGN KEY (LevelID) REFERENCES Levels(LevelID),
+
+    FOREIGN KEY (AttemptID) REFERENCES Attempts(AttemptID)
+
+);
+ 
+ 
+-- Disable foreign key checks
+
+SET FOREIGN_KEY_CHECKS = 0;
+ 
+-- Truncate all tables
+
+TRUNCATE TABLE Participants;
+
+TRUNCATE TABLE Batches;
+
+TRUNCATE TABLE Subjects;
+
+TRUNCATE TABLE Levels;
+
+TRUNCATE TABLE Attempts;
+
+TRUNCATE TABLE TestResults;
+ 
+-- Enable foreign key checks
+
+SET FOREIGN_KEY_CHECKS = 1;
+ 
+-- Drop the LowestScore and HighestScore columns
+
+ALTER TABLE TestResults
+
+DROP COLUMN LowestScore,
+
+DROP COLUMN HighestScore;
+ 
+-- Add the CNRating column
+
+ALTER TABLE TestResults
+
+ADD CNRating FLOAT;
+ 
+ 
+-- Add the AppearedInTest column to the Attempts table
+
+ALTER TABLE TestResults
+
+ADD AppearedInTest BOOLEAN;
+
 
 CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    password VARCHAR(200) NOT NULL
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100),
+    email VARCHAR(100) UNIQUE,
+    password VARCHAR(255)
 );
-
+ 
+ -- Add the PrimarySkill column to the Participants table
+ALTER TABLE Participants
+ADD PrimarySkill VARCHAR(255);
+ 
